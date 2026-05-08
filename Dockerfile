@@ -2,18 +2,23 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-# Instalar dependencias usando npm (más compatible)
-COPY package.json package-lock.json ./
-RUN npm install
+# Enable corepack for pnpm
+RUN corepack enable pnpm
 
-# Copiar solo lo necesario
+# Allow build scripts globally
+RUN pnpm config set ignore-scripts false --global
+
+# Install dependencies (ignoring postinstall for now)
+RUN pnpm install --ignore-scripts
+
+# Copy source
 COPY . .
 
-# Generar Prisma
-RUN npx prisma generate
+# Generate Prisma client manually
+RUN pnpm exec prisma generate
 
-# Compilar TypeScript
-RUN npm run build
+# Build
+RUN pnpm build
 
 EXPOSE 3000
 
