@@ -2,9 +2,10 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Job, Worker as BullWorker } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
+import axios from 'axios';
 import * as fs from 'fs';
 import * as path from 'path';
-import { exec, spawn } from 'child_process';
+import { exec } from 'child_process';
 
 interface TaskData {
   taskId: number;
@@ -46,6 +47,18 @@ export class WorkerProcessor implements OnModuleInit {
     console.log('Worker de tareas iniciado');
   }
 
+  private get AnthropicApiKey(): string {
+    return this.config.get('ANTHROPIC_API_KEY') || process.env.ANTHROPIC_API_KEY || '';
+  }
+
+  private get ClaudePath(): string {
+    return this.config.get('CLAUDE_PATH') || process.env.CLAUDE_PATH || '/data/.local/bin/claude';
+  }
+
+  async onModuleDestroy() {
+    await this.worker?.close();
+  }
+
   private async processTask(taskId: number): Promise<void> {
     console.log(`Procesando tarea ${taskId}`);
 
@@ -71,14 +84,15 @@ export class WorkerProcessor implements OnModuleInit {
       // 1. Preparar repositorio
       addLog('Preparando repositorio...');
       const projectPath = path.join(
-        this.config.get('PROJECTS_PATH') || '/data/workspace/projects',
+        this.config.get('PROJECTS_PATH') || '/data/workspace',
         task.project,
       );
 
       if (!fs.existsSync(projectPath)) {
-        addLog(`Creando directorio del proyecto: ${projectPath}`);
-        fs.mkdirSync(projectPath, { recursive: true });
+        throw new Error(`Proyecto no encontrado: ${projectPath}`);
       }
+
+      addLog(`Proyecto: ${projectPath}`);
 
       // Git checkout main y pull
       await this.runCommand('git checkout main', projectPath, addLog);
@@ -87,23 +101,31 @@ export class WorkerProcessor implements OnModuleInit {
       // Crear rama
       await this.runCommand(`git checkout -B ${task.branch}`, projectPath, addLog);
 
-      addLog('2. Ejecutando Claude Code...');
+      addLog('2. Ejecutando Anthropic API...');
 
-      // 2. Ejecutar Claude Code con el prompt
-      const fullPrompt = this.buildPrompt(task.project, task.module, task.prompt);
-      await this.runClaudeCode(fullPrompt, projectPath, addLog);
+      // 2. Ejecutar Claude con el prompt
+      const fullPrompt = this.buildPrompt(task.project, task.module, task.prompt, projectPath);
+      
+      // Intentar usar Anthropic API, si no hay key usar CLI
+      if (this.AnthropicApiKey) {
+        const result = await this.callAnthropicAPI(fullPrompt, addLog);
+        addLog(`Resultado: ${result}`);
+      } else {
+        // Fallback a CLI de Claude Code
+        await this.runClaudeCLI(fullPrompt, projectPath, addLog);
+      }
 
       // 3. Ejecutar lint y build
       addLog('3. Ejecutando validaciones...');
       
       try {
-        await this.runCommand('npm run lint || true', projectPath, addLog);
+        await this.runCommand('pnpm run lint || true', projectPath, addLog);
       } catch (e) {
         addLog(`Lint: ${(e as Error).message}`);
       }
       
       try {
-        await this.runCommand('npm run build || true', projectPath, addLog);
+        await this.runCommand('pnpm run build || true', projectPath, addLog);
       } catch (e) {
         addLog(`Build: ${(e as Error).message}`);
       }
@@ -148,29 +170,31 @@ export class WorkerProcessor implements OnModuleInit {
     }
   }
 
-  private buildPrompt(project: string, module: string, description: string): string {
+  private buildPrompt(project: string, module: string, description: string, projectPath: string): string {
+    // Leer README si existe
+    let readmeContent = '';
+    const readmePath = path.join(projectPath, 'README.md');
+    if (fs.existsSync(readmePath)) {
+      readmeContent = fs.readFileSync(readmePath, 'utf-8').substring(0, 2000);
+    }
+
     return `
-Eres un desarrollador senior full-stack.
+Eres un desarrollador senior full-stack con experiencia en proyectos médicos.
 
 Proyecto: ${project}
+
+${readmeContent ? `README del proyecto:\n${readmeContent}` : ''}
+
 Módulo a implementar: ${module}
 
 Tarea: ${description}
 
-Stack tecnológico:
-- Backend: NestJS
-- Frontend: Next.js
-- ORM: Prisma
-- Base de datos: PostgreSQL
-- Autenticación: JWT
-
 Instrucciones:
-1. Lee la documentación del proyecto en docs/
-2. Implementa el módulo siguiendo la arquitectura existente
+1. Lee la documentación del proyecto
+2. Implementa el módulo siguiendo la arquitectura existente  
 3. No modifiques archivos no relacionados
-4. Ejecuta npm run lint y npm run build
-5. Crea un resumen de cambios en docs/agent-reports/${module}.md
-6. Al terminar, reporta los cambios realizados
+4. Ejecuta pnpm run lint y pnpm run build
+5. Al terminar, reporta los cambios realizados
 
 Restricciones:
 - No modificar archivos .env
@@ -180,30 +204,37 @@ Restricciones:
 `;
   }
 
-  private async runCommand(
-    command: string,
-    cwd: string,
-    addLog: (msg: string) => void,
-  ): Promise<string> {
-    return new Promise((resolve, reject) => {
-      exec(
-        command,
-        { cwd, maxBuffer: 1024 * 1024 * 10 },
-        (error, stdout, stderr) => {
-          if (error) {
-            addLog(`Command error: ${command} - ${error.message}`);
-            // No rechazamos por errores en git operations
-            resolve(stderr || error.message);
-            return;
-          }
-          addLog(`Output: ${stdout.substring(0, 500)}`);
-          resolve(stdout);
+  private async callAnthropicAPI(prompt: string, addLog: (msg: string) => void): Promise<string> {
+    const apiKey = this.AnthropicApiKey;
+    
+    try {
+      const response = await axios.post(
+        'https://api.anthropic.com/v1/messages',
+        {
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 4096,
+          messages: [
+            { role: 'user', content: prompt }
+          ]
         },
+        {
+          headers: {
+            'x-api-key': apiKey,
+            'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json'
+          }
+        }
       );
-    });
+
+      return response.data.content[0].text;
+    } catch (error: any) {
+      const msg = error.response?.data?.error?.message || error.message;
+      addLog(`API Error: ${msg}`);
+      throw new Error(`Anthropic API error: ${msg}`);
+    }
   }
 
-  private async runClaudeCode(
+  private async runClaudeCLI(
     prompt: string,
     cwd: string,
     addLog: (msg: string) => void,
@@ -212,11 +243,17 @@ Restricciones:
       const promptFile = path.join(cwd, '.claude-prompt.txt');
       fs.writeFileSync(promptFile, prompt);
 
-      const proc = spawn('claude', [promptFile], {
-        cwd,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, CLAUDE_AS_HEADLESS: 'true' },
-      });
+      const claudePath = this.ClaudePath;
+
+      const proc = spawn(
+        claudePath,
+        ['--print', promptFile],
+        {
+          cwd,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: { ...process.env, CLAUDE_AS_HEADLESS: 'true' },
+        },
+      );
 
       let output = '';
       proc.stdout.on('data', (data) => {
@@ -248,4 +285,29 @@ Restricciones:
       });
     });
   }
+
+  private async runCommand(
+    command: string,
+    cwd: string,
+    addLog: (msg: string) => void,
+  ): Promise<string> {
+    return new Promise((resolve, reject) => {
+      exec(
+        command,
+        { cwd, maxBuffer: 1024 * 1024 * 10 },
+        (error, stdout, stderr) => {
+          if (error) {
+            addLog(`Command: ${command} - ${error.message}`);
+            resolve(stderr || error.message);
+            return;
+          }
+          addLog(`Output: ${stdout.substring(0, 500)}`);
+          resolve(stdout);
+        },
+      );
+    });
+  }
 }
+
+// Necesario para el import de spawn
+import { spawn } from 'child_process';
