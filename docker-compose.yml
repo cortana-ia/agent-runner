@@ -1,23 +1,12 @@
 version: '3.8'
 
 services:
-  postgres:
-    image: postgres:16
-    container_name: agent-postgres
-    environment:
-      POSTGRES_USER: agent
-      POSTGRES_PASSWORD: agent_password
-      POSTGRES_DB: agent_factory
-    ports:
-      - "5432:5432"
-    volumes:
-      - agent_postgres_data:/var/lib/postgresql/data
-
   redis:
     image: redis:7-alpine
     container_name: agent-redis
     ports:
       - "6379:6379"
+    restart: unless-stopped
 
   agent-runner:
     build:
@@ -26,7 +15,7 @@ services:
     container_name: agent-runner-api
     environment:
       - NODE_ENV=production
-      - DATABASE_URL=postgresql://agent:agent_password@postgres:5432/agent_factory
+      - DATABASE_URL=${DATABASE_URL}
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - PROJECTS_PATH=/data/projects
@@ -35,10 +24,6 @@ services:
       - "3001:3000"
     volumes:
       - ./projects:/data/projects
-    restart: unless-stopped
     depends_on:
-      - postgres
       - redis
-
-volumes:
-  agent_postgres_data:
+    restart: unless-stopped
