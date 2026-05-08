@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: agent_password
       POSTGRES_DB: agent_factory
     ports:
-      - "5433:5432"
+      - "5432:5432"
     volumes:
       - agent_postgres_data:/var/lib/postgresql/data
 
@@ -26,13 +26,13 @@ services:
     container_name: agent-runner-api
     environment:
       - NODE_ENV=production
-      - DATABASE_URL=postgresql://agent:agent_password@localhost:5433/agent_factory
+      - DATABASE_URL=postgresql://agent:agent_password@postgres:5432/agent_factory
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - PROJECTS_PATH=/data/projects
       - AGENT_TOKEN=${AGENT_TOKEN:-secret-token}
     ports:
-      - "7600:3000"
+      - "3001:3000"
     volumes:
       - ./projects:/data/projects
     restart: unless-stopped
