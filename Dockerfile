@@ -1,26 +1,18 @@
-FROM node:22-alpine
+FROM node:22-slim
 
 WORKDIR /app
 
-# Copy package files first
-COPY package.json pnpm-lock.yaml ./
+# Install dependencies using npm (bypassing pnpm issues)
+RUN npm install
 
-# Enable pnpm and approve builds
-RUN corepack enable pnpm && \
-    pnpm config set ignore-scripts false && \
-    pnpm approve-builds --global @nestjs/core @prisma/client @prisma/engines msgpackr-extract prisma
-
-# Install dependencies
-RUN pnpm install
-
-# Copy rest of source
+# Copy source
 COPY . .
 
-# Generate Prisma
-RUN pnpm exec prisma generate
+# Generate Prisma client
+RUN npx prisma generate
 
 # Build
-RUN pnpm build
+RUN npm run build
 
 EXPOSE 3000
 
