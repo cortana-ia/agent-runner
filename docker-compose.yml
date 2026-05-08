@@ -32,7 +32,7 @@ services:
       - PROJECTS_PATH=/data/projects
       - AGENT_TOKEN=${AGENT_TOKEN:-secret-token}
     ports:
-      - "3000:3000"
+      - "7600:3000"
     volumes:
       - ./projects:/data/projects
     depends_on:
