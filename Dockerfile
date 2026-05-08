@@ -2,7 +2,10 @@ FROM node:22-slim
 
 WORKDIR /app
 
-# Install dependencies using npm (bypassing pnpm issues)
+# Copy package files first
+COPY package.json ./
+
+# Install dependencies using npm
 RUN npm install
 
 # Copy source
