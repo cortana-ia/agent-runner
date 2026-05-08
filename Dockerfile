@@ -2,19 +2,19 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm install
+COPY package.json pnpm-lock.yaml ./
+RUN corepack enable pnpm && pnpm install
 
 COPY . .
-RUN npx prisma generate
-RUN npm run build
+RUN corepack enable pnpm && pnpm exec prisma generate
+RUN corepack enable pnpm && pnpm build
 
 FROM node:22-alpine
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
-RUN npm install --production
+COPY package.json pnpm-lock.yaml ./
+RUN corepack enable pnpm && pnpm install
 
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
